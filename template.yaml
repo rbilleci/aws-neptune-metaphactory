@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Metaphactory Fargate Deployment
+
+Parameters:
+
+  CPU:
+    Type: Number
+    Description: CPU allocated to AWS Fargate Service
+    AllowedValues: [ 256, 512, 1024, 2048, 4096 ]
+    Default: 512
+
+  EFSProvisionedThroughput:
+    Type: String
+    Description: |
+      By default, the Elastic File System is configured to use "bursting" mode.
+      Optionally you can provision a minimum throughput, but you should only
+      change this value if you aware of the cost impacts. See: https://aws.amazon.com/efs/pricing/
+    AllowedValues: [ "", 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024 ]
+    Default: ""
+
+  Image:
+    Type: String
+    Description: Docker image used for deployment
+    Default: oxfordsemantic/rdfox
+
+  Memory:
+    Type: Number
+    Description: Memory allocated to AWS Fargate Service
+    AllowedValues: [ 1024, 2048, 4096, 5120, 6144, 7168, 8192 ]
+    Default: 2048
+
+  ResourceNamePrefix:
+    Type: String
+    Description: Prefix used for naming resources
+    Default: demo
+
+  ServiceDomainName:
+    Description: Domain Name of the Service, for example; metaphactory.example.com
+    Type: String
+
+  ServiceName:
+    Description: Name for the service, used in naming resources
+    Type: String
+    Default: metaphactory
+
+  ServiceListenerARN:
+    Description: ARN of the Load Balancer Listener
+    Type: String
+
+  ServicePriority:
+    Description: Priority for Application Load Balancer Listener. This value must be unique within the Listener
+    Type: Number
+    Default: 11
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+
+  VPCSubnets:
+    Description: Select a minimum of 2 subnets
+    Type: List<AWS::EC2::Subnet::Id>
+
+
+Conditions:
+
+  ProvisionThroughput: !Not
+    - !Equals
+      - !Ref EFSProvisionedThroughput
+      - ""
+
+Resources:
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${ResourceNamePrefix}-${ServiceName}-cluster
+
+  #  Service:
+  ##    DependsOn: ListenerRule
+  #    Type: AWS::ECS::Service
+  #    Properties:
+  #      Cluster: !Ref Cluster
+  #      DeploymentConfiguration:
+  #        MaximumPercent: 100
+  #        MinimumHealthyPercent: 0
+  #      DesiredCount: 1
+  ##      HealthCheckGracePeriodSeconds: 300
+  #      LaunchType: FARGATE
+  ##      LoadBalancers:
+  ##        - ContainerName: !Ref ServiceName
+  ##          ContainerPort: 8080
+  ##          TargetGroupArn: !Ref  TargetGroup
+  #      NetworkConfiguration:
+  #        AwsvpcConfiguration:
+  #          AssignPublicIp: ENABLED
+  #          SecurityGroups:
+  #            - !Ref ECSSecurityGroup
+  #          Subnets: !Ref VPCSubnets
+  #      TaskDefinition: !Ref TaskDefinition
+
+  #  ListenerRule:
+  #    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+  #    Properties:
+  #      ListenerArn: !Ref ServiceListenerARN
+  #      Priority: !Ref ServicePriority
+  #      Conditions:
+  #        - Field: host-header
+  #          Values: [ !Ref ServiceDomainName ]
+  #      Actions:
+  #        - TargetGroupArn: !Ref TargetGroup
+  #          Type: forward
+
+  #  TargetGroup:
+  #    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+  #    Properties:
+  #      HealthCheckIntervalSeconds: 20
+  #      HealthCheckPath: /
+  #      HealthCheckProtocol: HTTP
+  #      HealthCheckTimeoutSeconds: 5
+  #      HealthyThresholdCount: 3
+  #      Matcher:
+  #        HttpCode: 200-302
+  #      Port: 8080
+  #      Protocol: HTTP
+  #      TargetType: ip
+  #      UnhealthyThresholdCount: 6
+  #      VpcId: !Ref VPC
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Environment:
+            - Name: PLATFORM_OPTS
+              Value: -Dlog4j.configurationFile=file:///var/lib/jetty/webapps/etc/log4j2.xml
+            - Name: JAVA_OPTS
+              Value: ""
+          Essential: true
+          Image: !Ref Image
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Ref ServiceName
+          MountPoints:
+            - SourceVolume: efs
+              ContainerPath: /apps
+            - SourceVolume: efs
+              ContainerPath: /runtime-data
+            - SourceVolume: efs
+              ContainerPath: /storage
+          Name: !Ref ServiceName
+          PortMappings:
+            - ContainerPort: 8080
+        # Secrets:
+        #   - Name: RDFOX_ROLE
+        #     ValueFrom: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/rdfox/role
+        #   - Name: RDFOX_PASSWORD
+        #     ValueFrom: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/rdfox/role-password
+        #   - Name: RDFOX_LICENSE_CONTENT
+        #     ValueFrom: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/rdfox/license
+      Cpu: !Ref CPU
+      Memory: !Ref Memory
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      Family: !Ref ServiceName
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [ FARGATE ]
+      TaskRoleArn: !Ref TaskRole
+      Volumes:
+        - EFSVolumeConfiguration:
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !GetAtt EFSAccessPoint.AccessPointId
+            FilesystemId: !Ref EFS
+            RootDirectory: /apps
+            TransitEncryption: ENABLED
+          Name: efs-apps
+        - EFSVolumeConfiguration:
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !GetAtt EFSAccessPoint.AccessPointId
+            FilesystemId: !Ref EFS
+            RootDirectory: /runtime-data
+            TransitEncryption: ENABLED
+          Name: efs-runtime-data
+        - EFSVolumeConfiguration:
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !GetAtt EFSAccessPoint.AccessPointId
+            FilesystemId: !Ref EFS
+            RootDirectory: /storage
+            TransitEncryption: ENABLED
+          Name: efs-storage
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref ServiceName
+      RetentionInDays: 90
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
+      GroupName: !Sub ${ResourceNamePrefix}-${SerivceName}-ecs
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+  # EFS
+  EFS:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      BackupPolicy:
+        Status: ENABLED
+      Encrypted: true
+      FileSystemPolicy:
+        Statement:
+          - Action: [ "elasticfilesystem:ClientMount" ]
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+      FileSystemTags:
+        - Key: Name
+          Value: !Ref ServiceName
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_60_DAYS
+      PerformanceMode: generalPurpose
+      ProvisionedThroughputInMibps: !If [ ProvisionThroughput, !Ref EFSProvisionedThroughput, !Ref AWS::NoValue ]
+      ThroughputMode: !If [ ProvisionThroughput, provisioned, bursting ]
+
+  EFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref EFS
+      RootDirectory:
+        #CreationInfo:
+        #  OwnerGid: "1211"
+        #  OwnerUid: "1211"
+        #  Permissions: "750"
+        Path: !Sub /${ServiceName}
+
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
+      GroupName: !Sub ${ResourceNamePrefix}-${ServiceName}-efs
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref ECSSecurityGroup
+          IpProtocol: -1
+
+  EFSMT1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFS
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Select [ 0, !Ref VPCSubnets ]
+
+  EFSMT2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFS
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Select [ 1, !Ref VPCSubnets ]
+
+  # Roles
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${ResourceNamePrefix}-${ServiceName}-task-execution-role
+      AssumeRolePolicyDocument:
+        Statement:
+          Action: [ sts:AssumeRole ]
+          Effect: Allow
+          Principal:
+            Service: [ ecs-tasks.amazonaws.com ]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: !Sub ${ResourceNamePrefix}-${ServiceName}-task-execution-policy
+          PolicyDocument:
+            Statement:
+              - Action: [ ssm:GetParameters, ssm:GetParameter,
+                          secretsmanager:GetSecretValue, secretsmanager:DescribeSecret,
+                          kms:Decrypt ]
+                Effect: Allow
+                Resource: "*"
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${ResourceNamePrefix}-${ServiceName}-task-role
+      AssumeRolePolicyDocument:
+        Statement:
+          Action: [ sts:AssumeRole ]
+          Effect: Allow
+          Principal:
+            Service: [ ecs-tasks.amazonaws.com ]
+      Policies:
+        - PolicyName: !Sub ${ResourceNamePrefix}-${ServiceName}-task-policy
+          PolicyDocument:
+            Statement:
+              - Action: [ elasticfilesystem:* ]
+                Effect: Allow
+                Resource: "*"
