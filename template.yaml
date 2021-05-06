@@ -203,7 +203,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
-      GroupName: !Sub ${ResourceNamePrefix}-${SerivceName}-ecs
+      GroupName: !Sub ${ResourceNamePrefix}-${ServiceName}-ecs
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
